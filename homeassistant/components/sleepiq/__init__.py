@@ -1,12 +1,15 @@
 """Support for SleepIQ from SleepNumber."""
+from contextlib import redirect_stdout
 from datetime import timedelta
+from io import StringIO
 import logging
-import traceback
+from requests.exceptions import ConnectionError
 
 from sleepyq import Sleepyq
 import voluptuous as vol
 
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
+from homeassistant.exceptions import PlatformNotReady, UnknownUser
 from homeassistant.helpers import discovery
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.entity import Entity
@@ -55,12 +58,8 @@ def setup(hass, config):
     try:
         DATA = SleepIQData(client)
         DATA.update()
-    except ValueError:
-        message = """
-            SleepIQ failed to login, double check your username and password"
-        """
-        _LOGGER.error(message)
-        return False
+    except (ConnectionError, UnknownUser) as e:
+        raise PlatformNotReady(e)
 
     discovery.load_platform(hass, "sensor", DOMAIN, {}, config)
     discovery.load_platform(hass, "binary_sensor", DOMAIN, {}, config)
@@ -71,7 +70,7 @@ def setup(hass, config):
 class SleepIQData:
     """Get the latest data from SleepIQ."""
 
-    def __init__(self, client):
+    def __init__(self, client: Sleepyq):
         """Initialize the data object."""
         self._client = client
         self.beds = {}
@@ -81,22 +80,51 @@ class SleepIQData:
     @Throttle(MIN_TIME_BETWEEN_UPDATES)
     def update(self):
         """Get the latest data from SleepIQ."""
-        self._client.login()
-        beds = self._client.beds_with_sleeper_status()
+        try:
+            # The client prints to stdout occassionally.
+            # We use redirect_stdout to intercept those calls and pipe them
+            # to our logger instead to give better context.
+            client_output = StringIO()
+            with redirect_stdout(client_output):
+                self._client.login()
+                beds = self._client.beds_with_sleeper_status()
+            _LOGGER.debug(client_output.getvalue())
+        except ConnectionError:
+            # Clear bed data due to bad endpoint.
+            self.beds = {}
+            raise
+        except AttributeError:
+            # This can happen if the SleepIQ API endpoint is unavailable.
+            self.beds = {}
+            raise ConnectionError("SleepIQ API unavailable")
+        except ValueError:
+            self.beds = {}
+            message = """
+                SleepIQ login failed. Double-check your username and password.
+            """
+            raise UnknownUser(message)
 
+        if len(self.beds) == 0:
+            # Either connected for first time or reconnected after disconnect.
+            _LOGGER.debug("Connected to SleepIQ.")
+
+        # Update the bed list
         self.beds = {bed.bed_id: bed for bed in beds}
 
 
 class SleepIQSensor(Entity):
     """Implementation of a SleepIQ sensor."""
 
-    def __init__(self, sleepiq_data, bed_id, side):
+    def __init__(self, sleepiq_data: SleepIQData, bed_id: int, side: str):
         """Initialize the sensor."""
         self._bed_id = bed_id
         self._side = side
         self.sleepiq_data = sleepiq_data
         self.side = None
         self.bed = None
+
+        self._available = False
+        self._attributes = {}
 
         # added by subclass
         self._name = None
@@ -105,20 +133,71 @@ class SleepIQSensor(Entity):
     @property
     def name(self):
         """Return the name of the sensor."""
-        return "SleepNumber {} {} {}".format(
-            self.bed.name, self.side.sleeper.first_name, self._name
-        )
+        if self.bed == None or self.side == None:
+            # Bed is unavailable -- use our known ID instead
+            return self.unique_id
+        else:
+            sleeper_name = self.side.sleeper.first_name
+            return f"Sleep Number {self.bed.name} {sleeper_name} {self._name}"
+    
+    @property
+    def unique_id(self):
+        """Return a unique ID."""
+        return f"Sleep Number {self._bed_id} {self._side} {self._name}"
+
+    @property
+    def device_info(self):
+        return {
+            'identifiers': {
+                (DOMAIN, self.unique_id)
+            },
+            'name': self.bed.name,
+            'bed_id': self._bed_id,
+            'mac_address': self.bed.mac_address,
+            'model': self.bed.model,
+            'sku': self.bed.sku,
+            'generation': self.bed.generation,
+            'purchase_date': self.bed.purchase_date,
+            'registration_date': self.bed.registration_date,
+            'size': self.bed.size,
+            'side': self._side,
+        }
+
+    @property
+    def available(self) -> bool:
+        """Return True if entity is available."""
+        return self._available
+
+    @property
+    def assumed_state(self) -> bool:
+        """Return True if unable to access real state of the entity."""
+        return not self._available
+
+    @property
+    def device_state_attributes(self):
+        """Return the state attributes."""
+        return self._attributes
 
     def update(self):
-        """Get the latest data from SleepIQ and updates the states."""
-        # Call the API for new sleepiq data. Each sensor will re-trigger this
-        # same exact call, but that's fine. We cache results for a short period
-        # of time to prevent hitting API limits.
-        self.sleepiq_data.update()
+        """Fetch the latest data from SleepIQ."""
+        try:
+            # Call the API for new sleepiq data. Each sensor will re-trigger 
+            # this same exact call, but that's fine. We cache results for a 
+            # short period of time to prevent hitting API limits.
+            self.sleepiq_data.update()
+        except ConnectionError:
+            # Wasn't able to update; mark as unavailable and use cached data
+            self._available = False
+            return
 
-        traceback.print_stack()
-        _LOGGER.error(repr(traceback.extract_stack()))
-        _LOGGER.error(repr(traceback.format_stack()))
+        self._available = True
 
         self.bed = self.sleepiq_data.beds[self._bed_id]
         self.side = getattr(self.bed, self._side)
+
+        self._attributes["sleeper"] = self.side.sleeper.first_name
+        self._attributes["bed_info"] = self.device_info
+        self._attributes["alerts"] = {
+            "alert_id": self.side.alert_id, 
+            "message": self.side.alert_detailed_message,
+        }

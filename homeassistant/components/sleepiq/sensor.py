@@ -46,4 +46,10 @@ class SleepNumberSensor(sleepiq.SleepIQSensor):
     def update(self):
         """Get the latest data from SleepIQ and updates the states."""
         sleepiq.SleepIQSensor.update(self)
-        self._state = self.side.sleep_number
+
+        try:
+            self._state = self.side.sleep_number
+            self._attributes["pressure"] = self.side.pressure
+        except AttributeError:
+            # Not able to update; use cached state
+            return

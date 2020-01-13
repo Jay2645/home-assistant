@@ -43,4 +43,10 @@ class IsInBedBinarySensor(sleepiq.SleepIQSensor, BinarySensorDevice):
     def update(self):
         """Get the latest data from SleepIQ and updates the states."""
         sleepiq.SleepIQSensor.update(self)
-        self._state = self.side.is_in_bed
+
+        try:
+            self._state = self.side.is_in_bed
+            self._attributes["sleep_goal"] = self.side.sleeper.sleep_goal
+        except AttributeError:
+            # Not able to update; use cached state
+            return
