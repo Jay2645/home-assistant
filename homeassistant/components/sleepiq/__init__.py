@@ -1,6 +1,7 @@
 """Support for SleepIQ from SleepNumber."""
 from datetime import timedelta
 import logging
+import traceback
 
 from sleepyq import Sleepyq
 import voluptuous as vol
@@ -114,6 +115,10 @@ class SleepIQSensor(Entity):
         # same exact call, but that's fine. We cache results for a short period
         # of time to prevent hitting API limits.
         self.sleepiq_data.update()
+
+        traceback.print_stack()
+        _LOGGER.error(repr(traceback.extract_stack()))
+        _LOGGER.error(repr(traceback.format_stack()))
 
         self.bed = self.sleepiq_data.beds[self._bed_id]
         self.side = getattr(self.bed, self._side)
