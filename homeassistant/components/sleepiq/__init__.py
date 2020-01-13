@@ -104,7 +104,9 @@ class SleepIQData:
             raise UnknownUser(message)
         finally:
             # Print any warnings that the client generated
-            _LOGGER.warning(client_output.getvalue())
+            warning_output = client_output.getvalue()
+            if len(warning_output) > 0:
+                _LOGGER.warning(client_output.getvalue())
 
         if len(self.beds) == 0:
             # Either connected for first time or reconnected after disconnect.
@@ -197,9 +199,9 @@ class SleepIQSensor(Entity):
         self.bed = self.sleepiq_data.beds[self._bed_id]
         self.side = getattr(self.bed, self._side)
 
-        self._attributes["sleeper"] = self.side.sleeper.first_name
         self._attributes["bed_info"] = self.device_info
         self._attributes["alerts"] = {
             "alert_id": self.side.alert_id, 
             "message": self.side.alert_detailed_message,
         }
+        self._attributes["sleeper"] = self.side.sleeper.first_name
