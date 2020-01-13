@@ -80,15 +80,14 @@ class SleepIQData:
     @Throttle(MIN_TIME_BETWEEN_UPDATES)
     def update(self):
         """Get the latest data from SleepIQ."""
+        # The client prints to stdout occassionally for warnings.
+        # We use redirect_stdout to intercept those calls and pipe them
+        # to our logger instead for better context.
+        client_output = StringIO()
         try:
-            # The client prints to stdout occassionally.
-            # We use redirect_stdout to intercept those calls and pipe them
-            # to our logger instead to give better context.
-            client_output = StringIO()
             with redirect_stdout(client_output):
                 self._client.login()
                 beds = self._client.beds_with_sleeper_status()
-            _LOGGER.debug(client_output.getvalue())
         except ConnectionError:
             # Clear bed data due to bad endpoint.
             self.beds = {}
@@ -103,6 +102,9 @@ class SleepIQData:
                 SleepIQ login failed. Double-check your username and password.
             """
             raise UnknownUser(message)
+        finally:
+            # Print any warnings that the client generated
+            _LOGGER.warning(client_output.getvalue())
 
         if len(self.beds) == 0:
             # Either connected for first time or reconnected after disconnect.
